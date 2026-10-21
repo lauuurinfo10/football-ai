@@ -1,6 +1,43 @@
 import json
+import math
 from copy import deepcopy
 from collections import Counter
+
+
+def calculate_shot_xg(event, home_team=None):
+    """
+    Calculează Expected Goals (xG) pentru un șut sau penalty pe baza
+    poziției pe teren [x, y], părții corpului și presiunii defensive.
+    """
+    event_type = event.get("type")
+    if event_type == "penalty":
+        return 0.78
+
+    if event_type not in {"shot", "goal"}:
+        return 0.0
+
+    pos = event.get("position") or [82, 50]
+    x, y = float(pos[0]), float(pos[1])
+
+    # Distanța față de cea mai apropiată poartă (în metri aproximativi pe un teren 105x68)
+    dist_left = math.hypot(x * 1.05, (y - 50.0) * 0.68)
+    dist_right = math.hypot((100.0 - x) * 1.05, (y - 50.0) * 0.68)
+    distance_m = min(dist_left, dist_right)
+
+    # Penalizare unghi față de axul central al porții (y = 50)
+    central_offset = abs(y - 50.0) / 50.0
+
+    # Model logistic de bază pentru xG
+    raw_xg = 0.68 * math.exp(-0.085 * max(0.0, distance_m - 5.0)) * (1.0 - 0.45 * central_offset)
+
+    if event.get("body_part") == "head":
+        raw_xg *= 0.65
+    if event.get("under_pressure"):
+        raw_xg *= 0.78
+    if event.get("on_target"):
+        raw_xg *= 1.12
+
+    return round(min(0.92, max(0.02, raw_xg)), 2)
 
 
 def events_until(match, timestamp=None):
@@ -67,7 +104,7 @@ get_active_lineups_at_time = active_lineups_at
 
 
 def calculate_match_state(match, timestamp=None):
-    """Classifică forma meciului folosind presiune, posesie, scor și ritm."""
+    """Clasifică forma meciului folosind presiune, posesie, scor și ritm."""
     teams = [match["home_team"], match["away_team"]]
     events = events_until(match, timestamp)
     stats = calculate_stats(match, timestamp)
@@ -118,18 +155,11 @@ def calculate_match_state(match, timestamp=None):
 
 
 def load_match(filepath):
-    with open(filepath) as f:
+    with open(filepath, encoding="utf-8") as f:
         return json.load(f)
 
 
 def calculate_possession(match, until=None):
-    """
-    Estimeaza posesia pe baza intervalelor dintre schimbarile de posesie.
-
-    Un eveniment possession_change indica echipa care preia posesia.
-    Intre doua astfel de evenimente, consideram ca posesia ramane la
-    aceeasi echipa.
-    """
     home = match["home_team"]
     away = match["away_team"]
     events = sorted(events_until(match, until), key=lambda event: event["timestamp"])
@@ -168,9 +198,6 @@ def calculate_possession(match, until=None):
 
 
 def calculate_possession_metrics(match, until=None):
-    """
-    Calculeaza durata si numarul de pase pentru fiecare secventa de posesie.
-    """
     home = match["home_team"]
     away = match["away_team"]
     events = sorted(events_until(match, until), key=lambda event: event["timestamp"])
@@ -230,12 +257,6 @@ def calculate_possession_metrics(match, until=None):
 
 
 def calculate_player_stats(match, until=None):
-    """
-    Calculeaza statistici individuale din evenimentele meciului.
-
-    Campurile de tracking, precum distanta parcursa, nu sunt inventate:
-    ele vor fi adaugate cand generatorul va avea date de tracking sintetice.
-    """
     home = match["home_team"]
     away = match["away_team"]
     players = {home: {}, away: {}}
@@ -255,6 +276,7 @@ def calculate_player_stats(match, until=None):
                 "shots": 0,
                 "shots_on_target": 0,
                 "goals": 0,
+                "xg": 0.0,
                 "max_shot_speed_kmh": 0,
                 "pressure_events": 0,
                 "tackles": 0,
@@ -308,10 +330,13 @@ def calculate_player_stats(match, until=None):
         elif event_type == "shot":
             stats["shots"] += 1
             stats["shots_on_target"] += int(event.get("on_target", False))
+            stats["xg"] = round(stats["xg"] + calculate_shot_xg(event, home), 2)
             stats["max_shot_speed_kmh"] = max(
                 stats["max_shot_speed_kmh"],
                 event.get("speed_kmh", 0),
             )
+        elif event_type == "penalty":
+            stats["xg"] = round(stats["xg"] + calculate_shot_xg(event, home), 2)
         elif event_type == "goal":
             stats["goals"] += 1
             stats["shots"] += 1
@@ -362,12 +387,12 @@ def calculate_stats(match, until=None):
 
     stats = {
         home: {"passes": 0, "passes_success": 0, "shots": 0,
-               "shots_on_target": 0, "goals": 0, "corners": 0,
+               "shots_on_target": 0, "goals": 0, "xg": 0.0, "corners": 0,
                "fouls": 0, "yellow_cards": 0, "red_cards": 0,
                "pressure": 0, "substitutions": 0,
                "possession_changes": 0},
         away: {"passes": 0, "passes_success": 0, "shots": 0,
-               "shots_on_target": 0, "goals": 0, "corners": 0,
+               "shots_on_target": 0, "goals": 0, "xg": 0.0, "corners": 0,
                "fouls": 0, "yellow_cards": 0, "red_cards": 0,
                "pressure": 0, "substitutions": 0,
                "possession_changes": 0}
@@ -383,12 +408,13 @@ def calculate_stats(match, until=None):
                 stats[team]["passes_success"] += 1
         elif t == "shot":
             stats[team]["shots"] += 1
+            stats[team]["xg"] = round(stats[team]["xg"] + calculate_shot_xg(event, home), 2)
             if event.get("on_target"):
                 stats[team]["shots_on_target"] += 1
+        elif t == "penalty":
+            stats[team]["xg"] = round(stats[team]["xg"] + calculate_shot_xg(event, home), 2)
         elif t == "goal":
             stats[team]["goals"] += 1
-
-            # Un gol este întotdeauna un șut pe poartă.
             stats[team]["shots"] += 1
             stats[team]["shots_on_target"] += 1
         elif t == "corner":
@@ -406,13 +432,11 @@ def calculate_stats(match, until=None):
         elif t == "possession_change":
             stats[team]["possession_changes"] += 1
 
-    # acuratete pase
     for team in [home, away]:
         p = stats[team]["passes"]
         ps = stats[team]["passes_success"]
         stats[team]["pass_accuracy"] = round((ps / p * 100), 1) if p > 0 else 0
 
-    # posesie estimata din durata intervalelor de posesie
     possession = calculate_possession(match, until)
     possession_metrics = calculate_possession_metrics(match, until)
 
@@ -427,9 +451,3 @@ def calculate_stats(match, until=None):
         )
 
     return stats
-
-if __name__ == "__main__":
-    import json
-    match = load_match("data/match.json")
-    stats = calculate_stats(match)
-    print(json.dumps(stats, indent=2))

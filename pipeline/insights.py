@@ -1,3 +1,5 @@
+from pipeline.interpret import calculate_shot_xg
+
 def _event_evidence(event):
     """Returneaza identificatorii folositi pentru trasabilitatea insight-ului."""
     return {
@@ -368,6 +370,7 @@ def build_insights(match, stats):
                     "evidence": {
                         **_event_evidence(event),
                         "player": event["player"],
+                        "xg":calculate_shot_xg(event),
                         "related_shot_id": (
                             related_shot.get("event_id")
                             if related_shot
@@ -400,6 +403,7 @@ def build_insights(match, stats):
                         "outcome": event.get("outcome"),
                         "speed_kmh": event.get("speed_kmh"),
                         "body_part": event.get("body_part"),
+                        "xg": calculate_shot_xg(event),
                     },
                 }
             )

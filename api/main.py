@@ -45,7 +45,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -120,6 +120,28 @@ def get_player(team: str, player: str):
         )
 
     return team_players[player]
+
+
+@app.post("/api/match/generate")
+def generate_new_match(
+    home_team: str = Query(default="Arsenal"),
+    away_team: str = Query(default="Liverpool"),
+):
+    """Genereaza un meci sintetic nou intre oricare doua echipe disponibile."""
+    from data.generator import TEAMS, generate_match
+    import json
+
+    if home_team not in TEAMS or away_team not in TEAMS or home_team == away_team:
+        raise HTTPException(
+            status_code=400,
+            detail="Alege doua echipe diferite valide din lista disponibila.",
+        )
+
+    new_match = generate_match(home_team, away_team)
+    with open(MATCH_PATH, "w", encoding="utf-8") as f:
+        json.dump(new_match, f, indent=2, ensure_ascii=False)
+
+    return build_match_payload()
 
 
 @app.get("/api/recap")
